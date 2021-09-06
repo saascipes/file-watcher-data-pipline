@@ -5,9 +5,64 @@ All steps in the data pipeline are performed on serverless or ephemeral compute.
 
 ## Prerequisites
 1. SaaSGlue account - click [here](https://console.saasglue.com) to create an account
-2. AWS account with S3 and EC2 permissions
-    - You will need an S3 bucket containing one or more text files to analyze. The files can be prefixed however you prefer. e.g. "s3://my-bucket/file-watcher-pipeline/testfiles/".
-    - You will need to define an IAM role providing read-only access to the AWS S3 bucket containing your input files. Permissions should include the following:
+2. AWS account with the following
+    - An S3 bucket containing one or more text files to analyze. The files can be prefixed however you prefer. e.g. "s3://my-bucket/file-watcher-pipeline/testfiles/".
+    - An AWS CLI access key
+        - Create a new AWS user - from the AWS Console choose the IAM service and click "Add users"
+        - Give the user a name and select the "Programmatic access" option
+        - Add the following policies to the new user:
+            - AmazonS3ReadOnlyAccess (this is an AWS managed policy)
+            - Create a new policy with the following rights:
+                ```
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "ec2:DescribeSubnets",
+                                "ec2:DescribeSecurityGroups",
+                                "ec2:DescribeInstances",
+                                "ec2:DescribeInstanceStatus",
+                                "ec2:DescribeImages",
+                                "ec2:DescribeKeyPairs",
+                                "ec2:DescribeVpcs",
+                                "ec2:CreateSecurityGroup",
+                                "ec2:AuthorizeSecurityGroupIngress",
+                                "ec2:CreateKeyPair",
+                                "ec2:CreateTags",
+                                "ec2:StopInstances"
+                            ],
+                            "Resource": "*"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": "ec2:RunInstances",
+                            "Resource": "*"
+                        }
+                    ]
+                }
+                ```
+            - Create a new policy with the following rights:
+                ```
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": "ec2:*",
+                            "Resource": "arn:aws:iam::948032566234:role/file-watcher"
+                        },
+                        {
+                            "Effect": "Allow",
+                            "Action": "iam:PassRole",
+                            "Resource": "arn:aws:iam::948032566234:role/file-watcher"
+                        }
+                    ]
+                }
+                ```
+        - Copy the access key id and secret for the new user - you'll need it later in the process
+    - An IAM role providing read-only access to the AWS S3 bucket containing your input files. Permissions should include the following:
 
         ```
         {
@@ -80,7 +135,7 @@ All steps in the data pipeline are performed on serverless or ephemeral compute.
             - Click your login name in the upper right hand corner and click "Access Keys"
             - Click the "User Access Keys" tab
             - Click "Create User Access Key"
-            - Enter a description, e.g. "Twitter data pipeline"
+            - Enter a description, e.g. "File watcher data pipeline"
             - Click "Select None"
             - Click the checkboxes next to 
                 - JOB_CREATE
@@ -97,6 +152,8 @@ All steps in the data pipeline are performed on serverless or ephemeral compute.
         - Click "Import Jobs"
         - Click "Choose File"
         - Select the "file-watcher-data-pipeline.sgj" file in the file-watcher-data-pipeline root folder and click "Open"
+        - Click "Import Jobs"
+        - You should see the message "Successfully imported the jobs file to your team!" followed by detailed results. Click "Close"
         - This will import three jobs:
             - File Watcher - checks for files in an AWS S3 location and runs the "File Analyzer" job for each file it finds. This job consists of four tasks.
                 - Tasks
@@ -108,7 +165,7 @@ All steps in the data pipeline are performed on serverless or ephemeral compute.
             - File Analyzer - performs word count analysis on a text file. This job consists of a single task named "Analyze file" which has three steps.
                 - Steps
                     - download file - downloads the file from AWS S3 to the runtime environment.
-                    - analyze file - runs a Clojure program compiled to a java jar file which generates a count of the number of instances of each word in the file and writes the results to std out.
+                    - analyze file - runs a Clojure program compiled to a java jar file which generates a count of the number of instances of each word in the file and writes the results to std out. We'll upload the java file file to SaaSGlue and attach it to this task in a later step.
                 - Note: this job does not delete or move the input files, so if you want this behavior you would need to modify the script for the "download file" step to do that.
             - Stop Agent and Terminate EC2 - this job will terminate the EC2 intance that was created in the File Watcher job after it becomes inactive. It consists of three tasks.
                 - Tasks
@@ -133,7 +190,7 @@ All steps in the data pipeline are performed on serverless or ephemeral compute.
         - Now set the runtime variables for the "File Watcher" job as follows:
 
             ```
-            instanceNameTag = the name tag to assign to the EC2 instance that will process the files
+            instanceNameTag = the name tag to assign to the EC2 instance that will process the files, e.g. "file-analyzer"
             NumInstances = 1
             ImageId = ami-0fcfc80303c1faf87
             sgAPIAccessKeySecret = [your api access key secret from step 2.2.2]
@@ -156,14 +213,35 @@ All steps in the data pipeline are performed on serverless or ephemeral compute.
             agentAccessKeyId = [your agent access key id from step 2.2.1]
             ```
 
-    7. Upload word count jar file
+    7. Configure team level runtime variables
+        - Click "Vars" in the menu bar
+        - Create the following key/value pairs by entering the key in the "key" input box and the value in the "value" input box and clicking "Create":
+
+            ```
+            AWS_ACCESS_KEY_ID = [your AWS access key id from preqrequisites step 2]
+            AWS_SECRET_ACCESS_KEY = [your AWS secret access key from preqrequisites step 2]
+            AWS_REGION = [your aws region, e.g. us-east-2]
+            sgLoginUrl = https://console.saasglue.com/login/apiLogin
+            sgApiUrl = https://console.saasglue.com
+            agentLogsAPIVersion = v0
+            sgTeamId = [your SaaSGlue team id from step 2.1]
+            ```
+
+    8. Configure Stop Agent and Terminate EC2 job
+        - Click "Designer" in the menu bar
+        - Click "Stop Agent and Terminate EC2"
+        - Click "Get ec2 inst id and region" in the side bar menu
+        - Check the box labeled "Select agent by @SGG dynamic variable"
+        - Enter "_agentId" in the input box
+        - Click "Save"
+    9. Upload word count jar file
         - Click "Artifacts" in the menu bar
         - Click "Upload New Artifacts"
         - Click "Choose Files"
         - Browse to the location of "word-count-0.1.0-SNAPSHOT-standalone.jar", click on the file and then click "Open"
         - Click "Upload Artifacts" - depending on your internet speed it may take up to a minute to upload the file
         - Click "Close"
-    8. Attach jar file to "File Analyzer" job, "Analyze file" task
+    10. Attach jar file to "File Analyzer" job, "Analyze file" task
         - Click "Designer" in the menu bar
         - Click the "File Analyzer" job
         - Click the "Analyze file" task in the side bar
@@ -173,7 +251,7 @@ All steps in the data pipeline are performed on serverless or ephemeral compute.
         - Click "Add Artifact(s)"
         - When the "Analyze file" task runs, the jar file will be downloaded to the runtime environment to run the file analysis
 ## Usage
-To start the data pipeline that analyzes the input files:
+- To start the data pipeline that analyzes the input files:
     - From the Designer view in the SaaSGlue web console, click the "File Watcher" job link
     - Click the "Run" tab
     - Click "Run Job"
@@ -183,7 +261,7 @@ You can view the details of each task in the job by clicking on the task name hy
 
 When the File Watcher job tasks are complete, click "Monitor" in the menu bar. You should see a job instance for each of your input files, e.g. "Analyze file - [s3 file path]". You can click the "Monitor" link for each job to monitor the progress. It will take a minute or so for the EC2 instance created in the File Watcher job to come up and for the SaaSGlue Agent to start up. Click "Agents" in the menu bar to watch for the new Agent to connect. This will take a minute or so. 
 
-When the new Agent appears in the list, click "Monitor" from the menu bar and click on the "Monitor" link next to the running File Analyzer job. When the task completes you should see a list of the words in the input file followed by the number of occurrences of the word. E.g.
+When the new Agent appears in the list, click "Monitor" from the menu bar and click on the "Monitor" link next to the running File Analyzer job. After the Agent starts to run the task, you can click the "Anaylyze file" link to see the detailed script output. When the task completes click the "stdout" link next to the "analyze file" step and you should see a list of the words in the input file followed by the number of occurrences of the word. E.g.
 
     [fully 1]
     [worlds 1]
@@ -192,4 +270,3 @@ When the new Agent appears in the list, click "Monitor" from the menu bar and cl
     [of 12]
 
 After all File Analyzer jobs are complete and after a waiting period of 60 seconds, the "Stop Agent and Terminate EC2" job will run automatically. It will be named "Inactive agent job - [EC2 instance name]" in the job Monitor. Click on the "Monitor" link next to the job instance to view the running details. After this job is complete, the EC2 instance created by the File Watcher job will be terminated.
-
